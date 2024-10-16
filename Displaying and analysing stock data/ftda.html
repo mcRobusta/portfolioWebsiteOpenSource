@@ -1,0 +1,54 @@
+<html>
+    <head>
+        <link rel="stylesheet" href="../../style.css">
+        <script src="../../main.js" ></script>
+        <script src="./webAssembly/correlation.js"></script>
+        <script src="./ftda.js"></script>
+    </head>
+    <body onload="navigateToNewTextContent(0)">
+
+        <div class="mainContentContainer">
+
+            <div class="textContentContainer">
+                <span id="ftda-text-content">
+                    <!-- Text content rendered here. -->
+                </span>
+                <div class="textContentButtonContainer">
+                    <button class="backButton" onclick="navigateToNewTextContent(2)">
+                        Back
+                    </button>
+                    <button class="forwardButton" onclick="navigateToNewTextContent(1)">
+                        Forward
+                    </button>
+                </div>
+            </div>
+
+            <div class="flashyContent">
+                <div>
+                    <svg class="canvas" id="ftda-canvas" width="50%" height="100%">
+                    </svg>
+                </div>
+                <div>
+                    <textarea class="primaryInput" id="ftda-canvas-textarea">
+                    </textarea>
+                    <div id="secondaryContent">
+                        <!-- Content rendered here by JS function updateSecondaryContent(). -->
+                        <div class="secondaryInput">
+                            Start Date:
+                            <input style="font-family: Windows95, sans-serif;" id="startDate" value="2008-01-01" placeholder="Format: YYYY-MM-DD"/>
+                            End Date:
+                            <input style="font-family: Windows95, sans-serif;" id="endDate" value="2009-01-01"/ placeholder="Format: YYYY-MM-DD">
+                        </div>
+                        <button 
+                        class="canvasButton" 
+                        id="stockAnalysisButton" 
+                        onclick="showTopologyAnimation('2008-01-01','2009-01-01')">
+                            Simulate NYSE activity
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </body>
+    
+</html>
