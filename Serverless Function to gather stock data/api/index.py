@@ -12,7 +12,7 @@ def getStockDataFromYahoo(requestedData):
     return formattedStockData
 
 app = Flask(__name__)
-CORS(app, origins='*') # IMPORTANT! Only allows functions ending with the domain vercel.app to send data to the browser.
+CORS(app, origins='*.vercel.app') # IMPORTANT! Only allows functions ending with the domain vercel.app to send data to the browser.
 
 @app.route('/')
 def home():
