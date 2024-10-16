@@ -220,7 +220,7 @@ async function drawStockTopology(numPoints) {
 
 function clearStockTopology() {
     /* Function logic:
-        * Simple boilerplate code here.
+        * Simple boilerplate code here. Delete the drawn topology so we can draw a new one.
      */
     const svg = document.getElementById("ftda-canvas");
     if (svg) { 
@@ -279,6 +279,42 @@ function filterOutNullTickers(tickerList) {
 
 /* Functions to download requested stock data. */
 
+async function updateEverythingWithNewTickers() {
+    /* Function logic:
+        * Downloading data, doing more correlation analysis, all this takes time!
+          We want to first ensure that our list of tickers has actually changed since
+          the last time we analysed them, otherwise we're asking the user to wait a 
+          long time just to replay an animation.
+        * To do this, I take in the data within the input textarea, sanitise it, and
+          compare it to the internally stored list of tickers that was last used for 
+          analysis. If they're the same, I just replay the cached animation. If not,
+          I send the new data off for analysis.
+    */
+    const newTickers = document.getElementById('ftda-canvas-textarea').value;
+    let newTickerList = newTickers.split("\n");
+    newTickerList = filterOutNullTickers(newTickerList); // Removes the lingering empty string that .split() insists on giving a home.
+    const sanitisedNewTickerList = newTickerList.map( (ticker) => sanitiseTextInput(ticker) );
+    if (checkArrayEquality(tickers, sanitisedNewTickerList)){
+        return false;
+    } else{
+        tickers = sanitisedNewTickerList;
+        return true;
+    }
+}
+
+function checkArrayEquality(a, b) {
+    /* Function logic:
+        * Simply check if the list of tickers in the textarea is the same as the interally stored list.
+          The eagle-eyed reader may notice that changing the order of tickers without changing the tickers
+          themselves will cause this function to return false- this is intended behaviour, because if we 
+          move the order of tickers about we have to move the vertices in the drawn stock topology.
+     */
+    return Array.isArray(a) &&
+        Array.isArray(b) &&
+        a.length === b.length &&
+        a.every((val, index) => val === b[index]);
+}
+
 function getStockData(data={}) {
     /* Function logic:
         * Launch a simple POST request to my serverless endpoint. 
@@ -324,31 +360,133 @@ function downloadComplete(intervalId) {
 
 /* Functions to handle and prepare downloaded stock data for analysis. */
 
-
-function checkArrayEquality(a, b) {
-    return Array.isArray(a) &&
-        Array.isArray(b) &&
-        a.length === b.length &&
-        a.every((val, index) => val === b[index]);
+function convertTextResponseToMatrix(textResponse) {
+    /* Function logic:
+        * The Python serverless function returns a text response, but the
+          C++ WebAssembly function wants to analyse a matrix of numbers.
+          Here, I convert the text-based stock value data into a nested 
+          list of numbers which acts as an array.
+    */
+    matrix = textResponse.split(']'); // Python uses square brackets to store the nested text response, so I'll get rid of these.
+    for (let i = 0; i < matrix.length; i++) {
+        matrix[i] = matrix[i].replaceAll('[', ''); // Once again, just removing Pythonic formatting.
+        matrix[i] = matrix[i].split(',').map(stockPrice => parseFloat(stockPrice)); // Turn each text element into a number, please.
+        if (i > 0) {
+            matrix[i].splice(0, 1); // Removes the first element of the new array, which is a trailing comma from the original Python list.
+        }
+    }
+    return matrix;
 }
 
-async function updateEverythingWithNewTickers() {
-    const newTickers = document.getElementById('ftda-canvas-textarea').value;
-    let newTickerList = newTickers.split("\n");
-    newTickerList = filterOutNullTickers(newTickerList); // Removes the lingering empty string that .split() insists on giving a home.
-    const sanitisedNewTickerList = newTickerList.map( (ticker)  => sanitiseTextInput(ticker) );
-    if (checkArrayEquality(tickers, sanitisedNewTickerList)){
-        return false
-    } else{
-        tickers = sanitisedNewTickerList;
-        return true;
+async function generateStockMatrix(startDate, endDate) {
+    /* Function logic:
+        * The functions defined above are individualistic- so this function brings them together under one roof.
+          Here, I request the data and convert it into a matrix all at once.
+     */
+    let tickersAsString = "";
+    for (var i = 0; i < tickers.length; i++) {
+        tickersAsString += tickers[i];
+        if (i < tickers.length - 1) {
+            tickersAsString += " ";
+        }
     }
+    const textResponse = await getStockData({
+        'ticker':tickersAsString,
+        'startDate':startDate,
+        'endDate':endDate
+    });
+    const matrix = convertTextResponseToMatrix(textResponse);
+    return matrix;
+}
+
+/* End of stock data preparation. */
+
+/* Functions to run Pearson's Correlation on stock data using WebAssembly. */
+
+function getArrayHeapPointer(array) {
+    /* Function logic:
+        * Oh boy. C++ in WebAssembly requires explicit memory assignment and management, which JavaScript does not do well.
+          I tell WebAssembly to reserve a spot in memory for all that C++ goodness and also to let JavaScript access that memory.
+          This creates a back-and-forth "drop zone" that allows C++ to send and receive data to and from JS.
+        * However, how can we access this from JavaScript? A piece of C++ memory cannot be a JavaScript variable because JavaScript
+          is constantly resizing and moving and messing with pretty much everything in its memory. So, we store the location of the
+          C++ memory as a JavaScript constant called heapPointer. This way, we always know how to get to this special C++ zone.
+        * Even though this function is called getHeapPointer, it actually begins by setting a pointer for a given array. This means
+          it takes information from a JS array and converts it into a f32 C++ vector format, and then returns the pointer.
+          Calling it setArrayHeapPointer kept confusing me because of how I later use the function.
+     */
+    const typedArray = Float32Array.from(array);
+    const heapPointer = Module._malloc( // _malloc = "memory allocate".
+      typedArray.length * typedArray.BYTES_PER_ELEMENT // I have to tell _malloc how many bytes large this C++ zone should be, but it's easy to work out.
+    );
+    Module["HEAPF32"].set(typedArray, heapPointer >> 2); // There's the set! 
+    return heapPointer;
+}
+
+async function computePearsonCoefficient(firstVector, secondVector) {
+    /* Function logic:
+        * I now load the stock data into WebAssembly and get that lovely C++ function to start crunching numbers.
+          I could have avoided using a matrix and loaded in each pair of stocks one-by-one, but this is so much faster.
+        * Although this looks like a lot of complicated work, this method is about 70x faster than computing the correlations with JavaScript. Boom.
+     */
+    const firstVectorPointer = getArrayHeapPointer(firstVector); // Get the pointers.
+    const secondVectorPointer = getArrayHeapPointer(secondVector);
+    const coefficient = Module.ccall(
+        "computePearsonCoefficient",
+        "number",
+        ["number", "number", "number"],
+        [
+            firstVectorPointer, // Load the pointers.
+            secondVectorPointer,
+            firstVector.length
+        ]
+    );
+    Module._free(firstVectorPointer); // Deallocate the pointers. If you don't do this, you encounter something called "memory leak" which eventually crashes your server.
+    Module._free(secondVectorPointer);
+    return coefficient;
+}
+
+/* End of WebAssembly-related functions. */
+
+/* Functions to update stock topology with colourful lines based on correlation data. */
+
+function correlationToColourmap(correlationCoefficient) {
+    /* Function logic:
+        * Each correlation value is a number between 0 and 1. How can this become a colour?
+          Well, this is what colour actually is! Colour is just a wavelength of light, and
+          smaller wavelength makes more "blue" colours. This 1D scale can be used to convert
+          small numbers into blue-y colours and larger numbers into red-ish colours.
+        * Breaking down a colour into its RGB components makes this process very simple. 
+          I use some vector maths to work out the transformation needed to go from one
+          colour to another (say, from purple to yellow) and then I add the transformation
+          multiplied by the correlation to the base colour and get a result. If the correlation
+          is 0.5, then my colour is halfway between purple and yellow. If it's 0.25, it's 
+          one quarter yellow, three quarters purple.
+     */
+    if (isNaN(correlationCoefficient)) {
+        correlationCoefficient = 0;
+    }
+    correlationCoefficient = Math.abs(correlationCoefficient); // A strong negative correlation is as good as a strong positive correlation to us.
+    const yellowAsRGB = [255,192,0];
+    const purpleAsRGB = [60,0,80]; // #9a00cc
+    const red = purpleAsRGB[0] + correlationCoefficient*(yellowAsRGB[0] - purpleAsRGB[0]);
+    const green = purpleAsRGB[1] + correlationCoefficient*(yellowAsRGB[1] - purpleAsRGB[1]);
+    const blue = purpleAsRGB[2] + correlationCoefficient*(yellowAsRGB[2] - purpleAsRGB[2]);
+    return `rgb(` + red + `,` + green + `,` + blue + `)`;
 }
 
 async function updateLineColours(stockMatrix) {
+    /* Function logic:
+        * I now have the colour each line _should_ be, I just now need to go and make that happen.
+          But what happens if I do this all at once? The end user just sees the final colour at the 
+          final date and doesn't get to appreciate all the nuance of change in between. So, this function
+          updates each line with the values from stockMatrix, which is really just a vector of numbers.
+          This means for 30 lines, stockMatrix contains 30 numbers.
+     */
     const vectorLength = 15;
     let colour = '';
-    function updateLineColour(id, colour) {
+
+    function updateLineColour(id, colour) { // A function so simple, I defined it inline.
         document.getElementById(id).setAttribute('stroke', colour);
     }
 
@@ -368,78 +506,15 @@ async function updateLineColours(stockMatrix) {
     }
 }
 
-function getArrayHeapPointer(array) {
-    const typedArray = Float32Array.from(array);
-    const heapPointer = Module._malloc(
-      typedArray.length * typedArray.BYTES_PER_ELEMENT
-    );
-    Module["HEAPF32"].set(typedArray, heapPointer >> 2);
-    return heapPointer;
-}
-
-// Load and run WebAssembly module
-async function computePearsonCoefficient(firstVector, secondVector) {
-    const firstVectorPointer = getArrayHeapPointer(firstVector);
-    const secondVectorPointer = getArrayHeapPointer(secondVector);
-    const coefficient = Module.ccall(
-        "computePearsonCoefficient",
-        "number",
-        ["number", "number", "number"],
-        [
-            firstVectorPointer,
-            secondVectorPointer,
-            firstVector.length
-        ]
-    );
-    Module._free(firstVectorPointer);
-    Module._free(secondVectorPointer);
-    return coefficient;
-}
-
-function correlationToColourmap(correlationCoefficient) {
-    if (isNaN(correlationCoefficient)) {
-        correlationCoefficient = 0;
-    }
-    correlationCoefficient = Math.abs(correlationCoefficient); // A strong negative correlation is as good as a strong positive correlation to us.
-    const yellowAsRGB = [255,192,0];
-    const purpleAsRGB = [60,0,80]; // #9a00cc
-    const red = purpleAsRGB[0] + correlationCoefficient*(yellowAsRGB[0] - purpleAsRGB[0]);
-    const green = purpleAsRGB[1] + correlationCoefficient*(yellowAsRGB[1] - purpleAsRGB[1]);
-    const blue = purpleAsRGB[2] + correlationCoefficient*(yellowAsRGB[2] - purpleAsRGB[2]);
-    return `rgb(` + red + `,` + green + `,` + blue + `)`;
-}
-
-function convertTextResponseToMatrix(textResponse) {
-    matrix = textResponse.split(']');
-    for (let i = 0; i < matrix.length; i++) {
-        matrix[i] = matrix[i].replaceAll('[', '');
-        matrix[i] = matrix[i].split(',').map(stockPrice => parseFloat(stockPrice));
-        if (i > 0) {
-            matrix[i].splice(0, 1); // Removes the first element of the new array, which is a trailing comma from the original Python list.
-        }
-    }
-    return matrix;
-}
-
-async function generateStockMatrix(startDate, endDate) {
-    let tickersAsString = "";
-    for (var i = 0; i < tickers.length; i++) {
-        tickersAsString += tickers[i];
-        if (i < tickers.length - 1) {
-            tickersAsString += " ";
-        }
-    }
-    const textResponse = await getStockData({
-        'ticker':tickersAsString,
-        'startDate':startDate,
-        'endDate':endDate
-    });
-    const matrix = convertTextResponseToMatrix(textResponse);
-    return matrix;
-}
-
 async function showTopologyAnimation() {
-    const startDate = document.getElementById('startDate').value || '2008-01-01';
+    /* Function logic:
+        * And finally, we bring it all together under one roof. This is an orchestrator function which 
+          brings together everything else already mentioned. Download and analyse the data. Compute the
+          correlations. Work out and update the colours. The only thing of note here is that I add a 
+          setTimeout to the delay between colour updates on the topology. If I want to make the animation
+          faster or slower, I tweak the setTimeout value here.
+    */
+    const startDate = document.getElementById('startDate').value || '2008-01-01'; // If startDate is blank, default to January 1st 2008.
     const endDate = document.getElementById('endDate').value || '2009-01-01';
     const stockAnalysisButton = document.getElementById("stockAnalysisButton");
     stockAnalysisButton.disabled = true;
@@ -450,7 +525,7 @@ async function showTopologyAnimation() {
     }
     stockAnalysisButton.innerHTML = "Downloading data."
     let animateDownloadButtonIntervalID = whileDownloading();
-    const horizon = 15;
+    const horizon = 15; // A time horizon- this means we compute the correlation between 15 days worth of stock data for each company.
     const bigStockMatrix = await generateStockMatrix(startDate, endDate);
     downloadComplete(animateDownloadButtonIntervalID);
     stockAnalysisButton.innerHTML="Running simulation...";
@@ -465,3 +540,5 @@ async function showTopologyAnimation() {
     stockAnalysisButton.disabled = false;
     stockAnalysisButton.innerHTML = "Simulate NYSE activity";
 }
+
+/* End of colourful correlation functions. */
