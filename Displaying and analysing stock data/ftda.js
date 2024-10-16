@@ -4,7 +4,7 @@ const textContentPages = [
     
     What if we consider the correlations between stocks as a surface? During a financial crash, no one escapes- everyone's stocks go down. Surely, there must be a noticeable difference between the 'normal' surface of chaos that is stock trading and the universal drop that is a crash, right?
     
-    On the right, you'll see the stocks within the Dow Jones Industrial Average connected together to make a 2D surface. The colour of each connection indicates how strong the correlation between the two stocks is (brighter is stronger). This simulation is running data between January 2008-January 2009.
+    On the right, you'll see the stocks within the Dow Jones Industrial Average connected together to make a 2D surface. The colour of each connection indicates how strong the correlation between the two stocks is (brighter is stronger). This simulation is running data between January 2008-January 2009. Press the button to see it in action!
     
     Can you spot when the infamous September 29th, 2008 financial crash occurs?`,
 
@@ -13,7 +13,12 @@ const textContentPages = [
     Enter any NYSE ticker (<a href="https://www.nyse.com/listings_directory/stock" target="_blank">here's a list</a>) followed by a newline to draw your own custom topology. You can also edit the date range of stock data in the box above. This website is actually fetching live NYSE stock data, so you can go all the way up to today. 
     
     Why not analyse another market crash, like the one in March 2020?`,
-    `Page 3, of 3`
+
+    `This visualisation lets us see financial crashes very clearly, but what's even more amazing is topology lets us predict financial crashes based on previous correlation data.
+    
+    Using a technique called persistent homology, we can filter out correlations below a certain threshold and analyse the resulting shape. Astonishingly, this gives us a really strong idea as to whether a given portfolio is approaching a 'significant global shift', which means the portfolio is about to go up or down drastically. This isn't a perfect science as the stock market is all but random, however with the help of machine learning and some correlation analysis we can obtain some surprisingly solid results.
+    
+    I connected a model trained on this extracted data to this website- enter a stock portfolio of your choice, and get a topology-based prediction of whether it's about to experience a significant global shift.`
 ];
 
 const secondaryHTMLContent = [
@@ -27,7 +32,7 @@ const secondaryHTMLContent = [
     <button 
     class="canvasButton" 
     id="stockAnalysisButton" 
-    onclick="showTopologyAnimation('2008-01-01','2009-01-01')">
+    onclick="showTopologyAnimation()">
         Simulate NYSE activity
     </button>
     `,
@@ -42,7 +47,7 @@ const secondaryHTMLContent = [
     <button 
     class="canvasButton" 
     id="stockAnalysisButton" 
-    onclick="showTopologyAnimation('2008-01-01','2009-01-01')">
+    onclick="showTopologyAnimation()">
         Simulate NYSE activity
     </button>
     `,
@@ -63,7 +68,6 @@ let tickers = [ // Begin with the Dow Jones Industrial Average, allowing users t
     'DD', 
     'XOM', 
     'GE', 
-    'GM', 
     'HPQ', 
     'HD', 
     'HON', 
@@ -76,7 +80,6 @@ let tickers = [ // Begin with the Dow Jones Industrial Average, allowing users t
     'MSFT', 
     'PFE', 
     'PG', 
-    'UTX',
     'VZ', 
     'WMT', 
     'DIS'
@@ -89,7 +92,14 @@ let currentTextPage = 0;
 
 function navigateToNewTextContent(targetPageIndex){
     /* Function logic:
-        * 
+        * Actually quite simple! The arrays secondaryHTMLContent and textContentPages store
+          the data to be loaded for each page, and the innerHTML for the corresponding HTML
+          elements are set to these array elements each time a navigation button is pressed.
+        * I use a single number to track the current page. Pressing the "Forward" button 
+          increases this number, and pressing "Back" decreases it. This number is then used
+          as an index to load the corresponding content. I take the modulus of this number,
+          so that pressing "Forward" on the last page returns a user to the first page 
+          (and pressing "Back" on the first page takes a user to the last page).
      */
     clearQueuedTimeouts(); // Prevents a "glitch" effect if navigation buttons are spammed.
     document.getElementById('ftda-text-content').innerHTML = ""; // Clear the text instead of waiting for it to be removed letter-by-letter.
@@ -110,6 +120,10 @@ function navigateToNewTextContent(targetPageIndex){
 }
 
 function updateSecondaryContent(index) {
+    /* Function logic:
+        * A mirror of navigateToNewTextContent. I wrote a separate function here just
+          to keep things clearer and follow good OOP principles.
+     */
     const secondaryInputElement = document.getElementById('secondaryContent');
     if (secondaryInputElement) {
         secondaryInputElement.innerHTML = secondaryHTMLContent[index];
@@ -216,7 +230,13 @@ function clearStockTopology() {
 
 /* End of functions that draw the topology. */
 
-function setMaxDateToToday() { // Used to prevent an end user requesting stock data from the future (sorry guys).
+/* Functions to stop user inputs creating unexpected site behaviour. */
+
+function setMaxDateToToday() {
+    /* Function logic:
+        * I prevent an end user requesting stock data from the future (sorry guys). 
+          If a user enters a date beyond today, their input is changed to today's date.
+     */
     const d = new Date();
     const dateToday = d.getFullYear().toString() + "-" +d.getMonth().toString() + "-" + d.getDate().toString();
     document.getElementById("startDate").max = dateToday;
@@ -224,6 +244,12 @@ function setMaxDateToToday() { // Used to prevent an end user requesting stock d
 }
 
 function sanitiseTextInput(textInput) {
+    /* Function logic:
+        * People are the worst, right? There's always someone trying to use a XSS attack on your website.
+          This function stops users entering code to execute within the ticker symbol input textarea.
+          It only allows users to enter alphabetic characters, so key code syntax like ;, () and $ 
+          won't be accepted. If a user tries this, the website won't even try to get the stock data requested.
+     */
     if (textInput.match(/^[A-Za-z]+$/)) { // Removes some basic attempts to inject malicious code via the text input, you naughty sausage.
         return textInput; // All good!
     } else {
@@ -232,6 +258,12 @@ function sanitiseTextInput(textInput) {
 }
 
 function filterOutNullTickers(tickerList) {
+    /* Function logic:
+        * I found through testing that people would often press "Enter" after entering their list of tickers.
+          The consequence of this is that the website would request data for a ticker called "" because it sees
+          an empty line at the bottom of the textarea. I decided to cover all my bases and go through the entire
+          input line-by-line, removing empty strings.
+     */
     var i = 0;
     while (i < tickerList.length) {
         if (tickerList[i] === '') {
@@ -242,6 +274,56 @@ function filterOutNullTickers(tickerList) {
     }
     return tickerList;
 }
+
+/* End of user input handling functions. */
+
+/* Functions to download requested stock data. */
+
+function getStockData(data={}) {
+    /* Function logic:
+        * Launch a simple POST request to my serverless endpoint. 
+          I take a "trust the user" approach- if you ask for an invalid ticker,
+          you'll get a null object which is just a black dot and lines in the
+          end topology.
+     */
+    return fetch("https://portfolio-website-functions.vercel.app/getStockData", {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+        },
+        body: JSON.stringify(data) // body data type must match "Content-Type" header
+    })
+    .then(response => response.text()); // parses JSON response into native JavaScript objects 
+}
+
+function whileDownloading() {
+    /* Function logic:
+        * Sometimes downloads take a hot minute, and an unresponsive webpage makes the user
+          think something's broken. To keep their interest, I implemented this status 
+          indicator that uses a retro-style ellipsis (...) that moves using setTimeout.
+     */
+    const displayTexts = ["Downloading data..", "Downloading data...", "Downloading data."]; // Array of strings to display
+    let index = 0;
+  
+    const intervalId = setInterval(() => {  // Create the interval and store its ID
+      stockAnalysisButton.innerHTML = displayTexts[index];  // Display the current text
+      index = (index + 1) % displayTexts.length;  // Update the index to cycle through the texts
+    }, 250);  // Change the interval time as needed.
+    return intervalId;  // Return the interval ID so it can be cleared later
+}
+  
+function downloadComplete(intervalId) {
+    /* Function logic:
+        * whileDownloading starts a setTimeout "animation" of refreshing texts. This just stops that animation.
+     */
+    clearInterval(intervalId);
+}
+
+/* End of stock data download functions. */
+
+/* Functions to handle and prepare downloaded stock data for analysis. */
+
 
 function checkArrayEquality(a, b) {
     return Array.isArray(a) &&
@@ -356,31 +438,9 @@ async function generateStockMatrix(startDate, endDate) {
     return matrix;
 }
 
-// Define the function that starts the interval
-function whileDownloading() {
-    // Array of strings to display
-    const displayTexts = ["Downloading data..", "Downloading data...", "Downloading data."];
-    let index = 0;
-  
-    // Create the interval and store its ID
-    const intervalId = setInterval(() => {
-      // Display the current text
-      stockAnalysisButton.innerHTML = displayTexts[index];
-  
-      // Update the index to cycle through the texts
-      index = (index + 1) % displayTexts.length;
-    }, 250); // Change the interval time as needed.
-  
-    // Return the interval ID so it can be cleared later
-    return intervalId;
-  }
-  
-  // Define the function that stops the interval
-  function downloadComplete(intervalId) {
-    clearInterval(intervalId);
-  }
-
-async function showTopologyAnimation(startDate, endDate) {
+async function showTopologyAnimation() {
+    const startDate = document.getElementById('startDate').value || '2008-01-01';
+    const endDate = document.getElementById('endDate').value || '2009-01-01';
     const stockAnalysisButton = document.getElementById("stockAnalysisButton");
     stockAnalysisButton.disabled = true;
     const didStockListUpdate = await updateEverythingWithNewTickers(); // Take the data provided by the user and use that for the analysis.
@@ -404,17 +464,4 @@ async function showTopologyAnimation(startDate, endDate) {
     }
     stockAnalysisButton.disabled = false;
     stockAnalysisButton.innerHTML = "Simulate NYSE activity";
-}
-
-function getStockData(data={}) { // Function takes a "trust the user" approach- if a user specifies a stock ticker whose data is not available in the date range, it returns an empty object and the result is missing connections in the end topology.
-    // Default options are marked with *.
-    return fetch("https://portfolio-website-functions.vercel.app/getStockData", {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
-        },
-        body: JSON.stringify(data) // body data type must match "Content-Type" header
-    })
-    .then(response => response.text()); // parses JSON response into native JavaScript objects 
 }
